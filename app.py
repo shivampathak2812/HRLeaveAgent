@@ -4,6 +4,7 @@ Streamlit UI for the HR Leave Agent.
 Run:  streamlit run app.py
 """
 
+import hmac
 import io
 import os
 import shutil
@@ -52,6 +53,7 @@ st.markdown(
     .chip-warn  { background: #fef3c7; color: #92400e; }
     .chip-bad   { background: #fee2e2; color: #991b1b; }
     .chip-fast  { background: #e0f2fe; color: #075985; margin: 0 0 .4rem; }
+    .who { font-size: .85rem; opacity: .8; margin: 0; }
     .emp-name { font-size: 1.05rem; font-weight: 700; margin-bottom: 0; }
     .emp-meta { font-size: .8rem; opacity: .7; margin-top: 0; }
     div[data-testid="stMetricValue"] { font-size: 1.4rem; }
@@ -177,7 +179,7 @@ ws = current_files()
 
 def activate_workspace():
     """Point the agent at the active files. Call only while holding agent.AGENT_LOCK."""
-    agent.activate(ws["rb_path"], ws["rb_text"], ws["rb_sample"], ws["db_path"])
+    agent.activate(ws["rb_path"], ws["rb_text"], ws["rb_sample"], ws["db_path"], my_id)
 
 
 def db_download_button(key: str, label: str = "⬇️ Download updated database"):
@@ -266,110 +268,192 @@ def save_uploads(pdf_file, xlsx_file) -> list[str]:
 
 
 # ------------------------------------------------------------
-# Sidebar - employee lookup, database, rule book
+# Login
+# Employees log in with Employee ID + the Email in the database and see only
+# their own record. HR logs in with HR_ADMIN_PASSWORD (.env / Streamlit
+# Secrets) and gets the full view: all employees, uploads, restore, download.
 # ------------------------------------------------------------
 ready = bool(ws["rb_path"] and ws["db_path"])   # both files available?
 db = load_db() if ws["db_path"] else None
 tomorrow = (pd.Timestamp.today() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+HR_PASSWORD = os.getenv("HR_ADMIN_PASSWORD", "")
 
 
+def login_employee(employee_id: str, email: str) -> str | None:
+    """Return an error message, or None after logging the employee in."""
+    if db is None:
+        return "The system is not set up yet. Please contact HR."
+    if "Email" not in db.columns:
+        return "The employee database has no Email column, so employee login is not possible. Please contact HR."
+    row = db[db["EmployeeID"].astype(str).str.strip().str.upper() == employee_id.strip().upper()]
+    if row.empty or str(row.iloc[0]["Email"]).strip().lower() != email.strip().lower():
+        return "Employee ID and email don't match our records."
+    r = row.iloc[0]
+    st.session_state.user = {"role": "employee", "id": str(r["EmployeeID"]).upper(), "name": r["Name"]}
+    reset_chat()
+    return None
+
+
+def logout():
+    st.session_state.user = None
+    reset_chat()
+
+
+user = st.session_state.get("user")
+# an employee removed from the database (e.g. a new upload) is logged out
+if user and user["role"] == "employee" and (
+        db is None or user["id"] not in set(db["EmployeeID"].astype(str).str.upper())):
+    st.session_state.user = user = None
+is_hr = bool(user and user["role"] == "hr")
+my_id = user["id"] if user and user["role"] == "employee" else None
+
+st.markdown(
+    """
+    <div class="hero">
+      <h1>🗓️ HR Leave Assistant</h1>
+      <p>Ask for leave in plain English. The assistant checks your balance and the company
+      rule book, then approves and updates the records, or tells you why it can't.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+if not user:
+    emp_tab, hr_tab = st.tabs(["👤 Employee login", "🛡️ HR login"])
+    with emp_tab:
+        if not ready:
+            st.info("The system is not set up yet. Please contact HR.")
+        else:
+            with st.form("employee_login"):
+                eid = st.text_input("Employee ID", placeholder="e.g. E101")
+                email = st.text_input("Work email", placeholder="name@company.com")
+                if st.form_submit_button("Log in", type="primary", width="stretch"):
+                    error = login_employee(eid, email)
+                    if error:
+                        st.error(error)
+                    else:
+                        st.rerun()
+    with hr_tab:
+        if not HR_PASSWORD:
+            st.warning("HR login is off. Set `HR_ADMIN_PASSWORD` in `.env` (or in Streamlit Secrets) to turn it on.")
+        else:
+            with st.form("hr_login"):
+                password = st.text_input("HR password", type="password")
+                if st.form_submit_button("Log in as HR", type="primary", width="stretch"):
+                    if hmac.compare_digest(password, HR_PASSWORD):
+                        st.session_state.user = {"role": "hr"}
+                        reset_chat()
+                        st.rerun()
+                    else:
+                        st.error("Wrong password.")
+    st.stop()
+
+
+# ------------------------------------------------------------
+# Sidebar
+# ------------------------------------------------------------
+def employee_card(emp, button_prompt: str):
+    status, css = employee_status(emp)
+    joined = emp["DateOfJoining"].strftime("%d %b %Y") if pd.notna(emp["DateOfJoining"]) else "—"
+    st.markdown(
+        f"<p class='emp-name'>{emp['Name']}</p>"
+        f"<p class='emp-meta'>{emp['EmployeeID']} · {emp['Department']} · joined {joined}</p>"
+        f"<span class='chip {css}'>{status}</span>",
+        unsafe_allow_html=True,
+    )
+    quota = int(emp["AnnualLeaveQuota"]) or 1
+    remaining = int(emp["LeavesRemaining"])
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Left", remaining)
+    c2.metric("Taken", int(emp["LeavesTaken"]))
+    c3.metric("Quota", quota)
+    st.progress(min(max(remaining / quota, 0.0), 1.0), text=f"{remaining} of {quota} days left")
+    last = emp["LastLeaveDate"]
+    st.caption(f"Last leave: {last if pd.notna(last) else 'none yet'}")
+    st.button("Ask for 1 day leave tomorrow", on_click=queue_prompt, args=(button_prompt,), width="stretch")
 
 
 with st.sidebar:
-    # ---------------- Upload your own files ----------------
-    has_uploads = "uploaded" in (ws["rb_source"], ws["db_source"])
-    # open automatically when something is missing
-    with st.expander("📤 Upload your files", expanded=not ready):
-        r = st.session_state.upload_round
-        xlsx = st.file_uploader("Employee database (.xlsx)", type=["xlsx"], key=f"xlsx{r}")
-        pdf = st.file_uploader("Rule book (.pdf)", type=["pdf"], key=f"pdf{r}")
-        st.download_button(
-            "⬇️ Excel template (required columns)",
-            data=template_excel(),
-            file_name="employee_database_template.xlsx",
-            width="stretch",
-        )
-        if st.button("✅ Use these files", disabled=not (xlsx or pdf),
-                     type="primary", width="stretch"):
-            errors = save_uploads(pdf, xlsx)
-            if errors:
-                for err in errors:
-                    st.error(err)
-            else:
-                reset_chat()
-                st.session_state.upload_round += 1
-                st.toast("Files uploaded. The assistant now uses them.", icon="📤")
-                st.rerun()
+    who = "HR admin" if is_hr else f"{user['name']} ({my_id})"
+    st.markdown(f"<p class='who'>Logged in as <b>{who}</b></p>", unsafe_allow_html=True)
+    st.button("🚪 Log out", on_click=logout, width="stretch")
+    st.divider()
 
-        sample_exists = os.path.exists(agent.DEFAULT_RULE_BOOK_PATH) or os.path.exists(
-            agent.DEFAULT_EMPLOYEE_DB_PATH)
-        remove_label = "↩️ Back to sample files" if sample_exists else "🗑️ Remove uploaded files"
-        if has_uploads and st.button(remove_label, width="stretch"):
-            remove_uploads()
-            st.rerun()
-
-        if ws["db_path"] and st.button("♻️ Restore original data", width="stretch",
-                                       help="Undo all leaves applied since this database was loaded"):
-            restore_original_data()
-            st.toast("Database restored to its original values.", icon="♻️")
-            st.rerun()
-
-        rb = ws["rb_source"] or "missing"
-        dbs = ws["db_source"] or "missing"
-        st.caption(f"In use: rule book = **{rb}**, database = **{dbs}**")
-        if rb == "uploaded":
-            st.caption(
-                "With your own rule book, the assistant follows its rules. Balance "
-                "checks are always enforced in code."
-            )
-
-    if db is not None:
-        st.markdown("### 👤 Employee")
-        labels = {f"{r.EmployeeID} · {r.Name}": r.EmployeeID for r in db.itertuples()}
-        choice = st.selectbox("Select employee", list(labels.keys()), label_visibility="collapsed")
-        emp = db[db["EmployeeID"] == labels[choice]].iloc[0]
-
-        status, css = employee_status(emp)
-        joined = emp["DateOfJoining"].strftime("%d %b %Y") if pd.notna(emp["DateOfJoining"]) else "—"
-        st.markdown(
-            f"<p class='emp-name'>{emp['Name']}</p>"
-            f"<p class='emp-meta'>{emp['Department']} · joined {joined}</p>"
-            f"<span class='chip {css}'>{status}</span>",
-            unsafe_allow_html=True,
-        )
-
-        quota = int(emp["AnnualLeaveQuota"]) or 1
-        remaining = int(emp["LeavesRemaining"])
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Left", remaining)
-        c2.metric("Taken", int(emp["LeavesTaken"]))
-        c3.metric("Quota", quota)
-        st.progress(min(max(remaining / quota, 0.0), 1.0), text=f"{remaining} of {quota} days left")
-
-        last = emp["LastLeaveDate"]
-        st.caption(f"Last leave: {last if pd.notna(last) else 'none yet'}")
-
-        st.button(
-            f"Ask for 1 day leave for {emp['EmployeeID']}",
-            on_click=queue_prompt,
-            args=(f"I'm employee {emp['EmployeeID']}, I want 1 day leave on {tomorrow}.",),
-            width="stretch",
-        )
-
-        st.divider()
-
-        with st.expander("📊 Employee database", expanded=False):
-            view = db.copy()
-            view["DateOfJoining"] = view["DateOfJoining"].dt.strftime("%Y-%m-%d")
-            st.dataframe(
-                view[["EmployeeID", "Name", "Department", "LeavesTaken", "LeavesRemaining", "LastLeaveDate"]],
-                hide_index=True,
+    if is_hr:
+        # ---------------- Upload your own files (HR only) ----------------
+        has_uploads = "uploaded" in (ws["rb_source"], ws["db_source"])
+        with st.expander("📤 Upload your files", expanded=not ready):
+            r = st.session_state.upload_round
+            xlsx = st.file_uploader("Employee database (.xlsx)", type=["xlsx"], key=f"xlsx{r}")
+            pdf = st.file_uploader("Rule book (.pdf)", type=["pdf"], key=f"pdf{r}")
+            st.download_button(
+                "⬇️ Excel template (required columns)",
+                data=template_excel(),
+                file_name="employee_database_template.xlsx",
                 width="stretch",
             )
+            if st.button("✅ Use these files", disabled=not (xlsx or pdf),
+                         type="primary", width="stretch"):
+                errors = save_uploads(pdf, xlsx)
+                if errors:
+                    for err in errors:
+                        st.error(err)
+                else:
+                    reset_chat()
+                    st.session_state.upload_round += 1
+                    st.toast("Files uploaded. The assistant now uses them.", icon="📤")
+                    st.rerun()
 
-        db_download_button("dl_sidebar")
-        saved_at = pd.Timestamp.fromtimestamp(os.path.getmtime(ws["db_path"]))
-        st.caption(f"Database last saved: {saved_at:%d %b %Y, %I:%M:%S %p}")
+            sample_exists = os.path.exists(agent.DEFAULT_RULE_BOOK_PATH) or os.path.exists(
+                agent.DEFAULT_EMPLOYEE_DB_PATH)
+            remove_label = "↩️ Back to sample files" if sample_exists else "🗑️ Remove uploaded files"
+            if has_uploads and st.button(remove_label, width="stretch"):
+                remove_uploads()
+                st.rerun()
+
+            if ws["db_path"] and st.button("♻️ Restore original data", width="stretch",
+                                           help="Undo all leaves applied since this database was loaded"):
+                restore_original_data()
+                st.toast("Database restored to its original values.", icon="♻️")
+                st.rerun()
+
+            rb = ws["rb_source"] or "missing"
+            dbs = ws["db_source"] or "missing"
+            st.caption(f"In use: rule book = **{rb}**, database = **{dbs}**")
+            if rb == "uploaded":
+                st.caption(
+                    "With your own rule book, the assistant follows its rules. Balance "
+                    "checks are always enforced in code."
+                )
+            if db is not None and "Email" not in db.columns:
+                st.warning("This database has no Email column, so employees can't log in.")
+
+        if db is not None:
+            st.markdown("### 👤 Employee")
+            labels = {f"{r.EmployeeID} · {r.Name}": r.EmployeeID for r in db.itertuples()}
+            choice = st.selectbox("Select employee", list(labels.keys()), label_visibility="collapsed")
+            emp = db[db["EmployeeID"] == labels[choice]].iloc[0]
+            employee_card(emp, f"I'm employee {emp['EmployeeID']}, I want 1 day leave on {tomorrow}.")
+
+            st.divider()
+            with st.expander("📊 Employee database", expanded=False):
+                view = db.copy()
+                view["DateOfJoining"] = view["DateOfJoining"].dt.strftime("%Y-%m-%d")
+                st.dataframe(
+                    view[["EmployeeID", "Name", "Department", "LeavesTaken", "LeavesRemaining", "LastLeaveDate"]],
+                    hide_index=True,
+                    width="stretch",
+                )
+            db_download_button("dl_sidebar")
+            saved_at = pd.Timestamp.fromtimestamp(os.path.getmtime(ws["db_path"]))
+            st.caption(f"Database last saved: {saved_at:%d %b %Y, %I:%M:%S %p}")
+
+    elif db is not None:
+        # ---------------- Employee: only their own record ----------------
+        st.markdown("### 👤 My leave")
+        me = db[db["EmployeeID"].astype(str).str.upper() == my_id].iloc[0]
+        employee_card(me, f"I want 1 day leave on {tomorrow}.")
+        st.divider()
 
     with st.expander("📘 Rule book", expanded=False):
         if ws["rb_text"].strip():
@@ -391,7 +475,7 @@ with st.sidebar:
                 args=(e["questions"][0],),
                 width="stretch",
             )
-        if cache and st.button("🗑️ Clear saved answers", width="stretch"):
+        if is_hr and cache and st.button("🗑️ Clear saved answers", width="stretch"):
             faq.clear_cache(ws["rb_path"])
             st.rerun()
 
@@ -404,40 +488,40 @@ with st.sidebar:
 # ------------------------------------------------------------
 # Main area
 # ------------------------------------------------------------
-st.markdown(
-    """
-    <div class="hero">
-      <h1>🗓️ HR Leave Assistant</h1>
-      <p>Ask for leave in plain English. The assistant checks your balance and the company
-      rule book, then approves and updates the records, or tells you why it can't.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
 # Setup needed - say exactly what is missing
 if not ready:
-    missing = []
-    if not ws["db_path"]:
-        missing.append("the **employee database** (.xlsx)")
-    if not ws["rb_path"]:
-        missing.append("the **rule book** (.pdf)")
-    st.info(
-        "👋 To get started, upload " + " and ".join(missing)
-        + " from **📤 Upload your files** in the sidebar."
-    )
+    if is_hr:
+        missing = []
+        if not ws["db_path"]:
+            missing.append("the **employee database** (.xlsx)")
+        if not ws["rb_path"]:
+            missing.append("the **rule book** (.pdf)")
+        st.info(
+            "👋 To get started, upload " + " and ".join(missing)
+            + " from **📤 Upload your files** in the sidebar."
+        )
+    else:
+        st.info("The system is not set up right now. Please contact HR.")
 
 # Empty state - example prompts
 elif not st.session_state.display:
     st.markdown("**Try one of these:**")
-    ids = db["EmployeeID"].astype(str).tolist()
-    id1, id2 = ids[0], ids[min(1, len(ids) - 1)]
-    examples = [
-        f"I'm employee {id1}, I want 2 days leave on {tomorrow}",
-        f"I'm {id2}, can I take leave tomorrow?",
-        f"How many leaves do I have left? I'm {id1}",
-        "What is the probation period rule?",
-    ]
+    if is_hr:
+        ids = db["EmployeeID"].astype(str).tolist()
+        id1, id2 = ids[0], ids[min(1, len(ids) - 1)]
+        examples = [
+            f"I'm employee {id1}, I want 2 days leave on {tomorrow}",
+            f"I'm {id2}, can I take leave tomorrow?",
+            f"How many leaves do I have left? I'm {id1}",
+            "What is the probation period rule?",
+        ]
+    else:
+        examples = [
+            f"I want 2 days leave on {tomorrow}",
+            "Can I take leave tomorrow?",
+            "How many leaves do I have left?",
+            "What is the probation period rule?",
+        ]
     cols = st.columns(2)
     for i, ex in enumerate(examples):
         cols[i % 2].button(ex, key=f"ex{i}", on_click=queue_prompt, args=(ex,), width="stretch")
@@ -450,13 +534,14 @@ for i, msg in enumerate(st.session_state.display):
                 st.markdown(SOURCE_BADGES[msg["source"]], unsafe_allow_html=True)
             render_steps(msg.get("steps", []))
         st.markdown(msg["content"])
-        if msg.get("leave_applied") and ws["db_path"]:
+        if is_hr and msg.get("leave_applied") and ws["db_path"]:
             db_download_button(f"dl_msg_{i}", "⬇️ Download the updated database")
 
 # New input (typed or from a button)
+placeholder = ("e.g. I'm employee E101, I want 2 days leave on 2026-10-20" if is_hr
+               else "e.g. I want 2 days leave on 2026-10-20")
 typed = st.chat_input(
-    "e.g. I'm employee E101, I want 2 days leave on 2026-10-20" if ready
-    else "Upload the rule book and employee database first",
+    placeholder if ready else "The system is not set up yet",
     disabled=not ready,
 )
 prompt = (typed or st.session_state.pending) if ready else None
@@ -474,7 +559,7 @@ if prompt:
     with st.chat_message("assistant", avatar="🤖"):
 
         # ---- FAST PATH: balance from DB or saved FAQ answer (no LLM call) ----
-        quick = faq.quick_answer(prompt, ws["rb_path"], ws["db_path"])
+        quick = faq.quick_answer(prompt, ws["rb_path"], ws["db_path"], my_id)
 
         if quick:
             reply, source = quick

@@ -52,6 +52,11 @@ RULE_BOOK_PATH = None
 EMPLOYEE_DB_PATH = None
 RULE_BOOK_IS_SAMPLE = False
 
+# Logged-in employee (web app). When set, the tools only work for this ID,
+# so nobody can read or change another employee's record by typing their ID.
+# None = no restriction (HR login, or the terminal version).
+ALLOWED_EMPLOYEE_ID = None
+
 # One agent run at a time, so two visitors never swap each other's files
 AGENT_LOCK = threading.RLock()
 
@@ -115,7 +120,7 @@ def use_rule_book(path: str):
     text = load_rule_book(path)
     if not text.strip():
         raise ValueError("No text found in the PDF (is it a scanned image?).")
-    activate(path, text, is_sample_rule_book(path), EMPLOYEE_DB_PATH)
+    activate(path, text, is_sample_rule_book(path), EMPLOYEE_DB_PATH, ALLOWED_EMPLOYEE_ID)
 
 
 def use_employee_db(path: str):
@@ -123,12 +128,15 @@ def use_employee_db(path: str):
     error = check_employee_db(path)
     if error:
         raise ValueError(error)
-    activate(RULE_BOOK_PATH, RULE_BOOK_TEXT, RULE_BOOK_IS_SAMPLE, path)
+    activate(RULE_BOOK_PATH, RULE_BOOK_TEXT, RULE_BOOK_IS_SAMPLE, path, ALLOWED_EMPLOYEE_ID)
 
 
-def activate(rule_book_path, rule_book_text, rule_book_is_sample, employee_db_path):
-    """Point the agent at a set of files (already checked) without re-reading them."""
-    global RULE_BOOK_PATH, RULE_BOOK_TEXT, RULE_BOOK_IS_SAMPLE, EMPLOYEE_DB_PATH
+def activate(rule_book_path, rule_book_text, rule_book_is_sample, employee_db_path,
+             allowed_employee_id=None):
+    """Point the agent at a set of files (already checked) without re-reading them,
+    and (optionally) lock it to one logged-in employee."""
+    global RULE_BOOK_PATH, RULE_BOOK_TEXT, RULE_BOOK_IS_SAMPLE, EMPLOYEE_DB_PATH, ALLOWED_EMPLOYEE_ID
+    ALLOWED_EMPLOYEE_ID = allowed_employee_id.upper() if allowed_employee_id else None
     RULE_BOOK_PATH = rule_book_path
     RULE_BOOK_TEXT = rule_book_text or ""
     RULE_BOOK_IS_SAMPLE = bool(rule_book_is_sample)
@@ -159,6 +167,16 @@ def load_startup_files():
 
 
 load_startup_files()
+
+def access_denied(employee_id: str):
+    """Block access to any record other than the logged-in employee's."""
+    if ALLOWED_EMPLOYEE_ID and str(employee_id).strip().upper() != ALLOWED_EMPLOYEE_ID:
+        return (
+            f"Access denied: you are logged in as {ALLOWED_EMPLOYEE_ID} and can only "
+            f"view or apply leave for your own record."
+        )
+    return None
+
 
 #probabtion validation 
 
@@ -256,6 +274,9 @@ def get_employee_info(employee_id: str) -> str:
 
     if EMPLOYEE_DB_PATH is None:
         return "No employee database is loaded yet. Please upload one first."
+    denied = access_denied(employee_id)
+    if denied:
+        return denied
     df = pd.read_excel(EMPLOYEE_DB_PATH)
 
     # Make EmployeeID comparison case-insensitive
@@ -309,6 +330,9 @@ def apply_leave(
     # 1. Read the employee database
     if EMPLOYEE_DB_PATH is None:
         return "No employee database is loaded yet. Please upload one first."
+    denied = access_denied(employee_id)
+    if denied:
+        return denied
     df = pd.read_excel(EMPLOYEE_DB_PATH)
 
     # 2. Find the employee using their ID
@@ -495,6 +519,8 @@ def prefetch_employee_records(messages: list) -> str:
     """SPEED: if the user mentioned an employee ID, look the record up in
     code and hand it to the LLM, so it doesn't need a get_employee_info call.
     Read fresh on every step, so it is correct even after apply_leave."""
+    if ALLOWED_EMPLOYEE_ID and EMPLOYEE_DB_PATH:
+        return get_employee_info.func(ALLOWED_EMPLOYEE_ID)
     for m in reversed(messages):
         if isinstance(m, HumanMessage):
             ids = faq.find_employee_ids(message_text(m), EMPLOYEE_DB_PATH)
@@ -529,6 +555,12 @@ def agent_node(state: AgentState):
     messages = trim_history(state["messages"])
 
     system = build_system_prompt()
+    if ALLOWED_EMPLOYEE_ID:
+        system += (
+            f"\n\nTHE USER IS LOGGED IN AS EMPLOYEE {ALLOWED_EMPLOYEE_ID}. They do not need to "
+            f"give their ID. Only help with {ALLOWED_EMPLOYEE_ID}'s own leave. If they ask about "
+            "or claim to be any other employee, politely refuse and do not call any tool for that ID.\n"
+        )
     records = prefetch_employee_records(messages)
     if records:
         system += (

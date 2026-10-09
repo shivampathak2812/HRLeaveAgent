@@ -54,6 +54,12 @@
             "How does this assistant work?"
           ],
           "answer": "I can check your leave balance and apply leave for you. Just tell me your **employee ID**, the **date**, and the **number of days**, for example: *I'm employee E101, I want 2 days leave on 2026-10-20.* I'll check it against the rule book and update the records if it's approved."
+        },
+        {
+          "questions": [
+            "i want leave of 2 days due to some family issue."
+          ],
+          "answer": "Hello Emeka! I can help you with your leave application. \n\nSince you didn't mention the dates, could you please let me know **which date(s)** you would like to take your 2 days of leave?"
         }
       ]
     }

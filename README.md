@@ -19,15 +19,21 @@ uv run agent.py             # terminal chat   (or: python agent.py)
 uv run streamlit run app.py # web UI          (or: streamlit run app.py)
 ```
 
+### Login and privacy
+- **Employee login:** Employee ID + the email in the database. An employee sees only their own balance, the rule book and the FAQ, never the employee list, uploads or downloads.
+- **The agent is locked to the logged-in employee:** both tools refuse any other ID (`access_denied()` in `agent.py`), the prompt says who is logged in, and the balance shortcut only answers for that employee. Typing "I'm E108" does not work.
+- **HR login:** password from `HR_ADMIN_PASSWORD` (`.env` locally, Secrets on Streamlit Cloud). HR gets the full view: every employee, database table, upload, restore and download, and can apply leave for anyone.
+- Without `HR_ADMIN_PASSWORD` the HR login is off. Without an `Email` column employees can't log in.
+
 ### Streamlit UI (`app.py`)
 - Chat with the agent; each tool call (employee lookup, leave apply) shows live, and you can expand it to see the result.
-- Sidebar: pick an employee to see the balance, status (eligible / probation / no balance) and a one-click leave request.
-- Sidebar also shows the full employee database and the rule book; the balance refreshes after every approval.
+- Employee sidebar: own balance, status (eligible / probation / no balance), a one-click leave request, rule book, FAQ.
+- HR sidebar: pick any employee, full database table, download, rule book, FAQ; the balance refreshes after every approval.
 - Approved leaves are saved to the Excel file; refresh starts a new chat; **♻️ Restore original data** undoes test leaves.
 - "New conversation" clears the chat memory.
 
 ### Use your own rule book and database
-Sidebar → **📤 Upload your files**:
+HR login → sidebar → **📤 Upload your files**:
 - Upload an Excel database and/or a rule book PDF, then click **Use these files**.
 - The Excel file must have these columns: `EmployeeID, Name, Department, DateOfJoining, AnnualLeaveQuota, LeavesTaken, LeavesRemaining, LastLeaveDate`. Download the template from the same panel.
 - Files are checked first (missing columns, non-numeric balances, PDF with no text) and rejected with a clear message.

@@ -156,7 +156,7 @@ def _best_match(question: str, entries: list[dict]):
 # ------------------------------------------------------------
 # Balance check straight from the database
 # ------------------------------------------------------------
-def _balance_answer(message: str, employee_db_path: str | None):
+def _balance_answer(message: str, employee_db_path: str | None, allowed_id: str | None = None):
     if not employee_db_path:
         return None
     ids = find_employee_ids(message, employee_db_path)
@@ -165,6 +165,16 @@ def _balance_answer(message: str, employee_db_path: str | None):
 
     asks_balance = any(w in text for w in BALANCE_WORDS)
     is_request = bool(words & REQUEST_WORDS) or bool(DATE_RE.search(message))
+    if allowed_id:
+        # Logged-in employee: only ever their own balance. Another ID in the
+        # message goes to the agent, which refuses it.
+        if ids and ids != [allowed_id.upper()]:
+            return None
+        # without an ID, "how many leaves per year" is a policy question, so
+        # only clear balance words count here
+        if not ids and not words & {"left", "remaining", "remain", "balance", "available"}:
+            return None
+        ids = [allowed_id.upper()]
     if len(ids) != 1 or not asks_balance or is_request:
         return None
 
@@ -184,7 +194,8 @@ def _balance_answer(message: str, employee_db_path: str | None):
 # ------------------------------------------------------------
 # Public API
 # ------------------------------------------------------------
-def quick_answer(message: str, rule_book_path: str | None, employee_db_path: str | None):
+def quick_answer(message: str, rule_book_path: str | None, employee_db_path: str | None,
+                 allowed_id: str | None = None):
     """
     Try to answer without the LLM.
     Returns (answer, source) where source is "database" or "faq",
@@ -192,7 +203,7 @@ def quick_answer(message: str, rule_book_path: str | None, employee_db_path: str
     """
     if not rule_book_path:   # no rule book yet - nothing to answer from
         return None
-    balance = _balance_answer(message, employee_db_path)
+    balance = _balance_answer(message, employee_db_path, allowed_id)
     if balance:
         return balance, "database"
 
