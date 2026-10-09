@@ -1,0 +1,15 @@
+[project]
+name = "hr-leave-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "langchain>=1.4.3",
+    "langchain-google-genai>=4.4.0",
+    "langgraph>=1.2.14",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.6",
+    "pypdf>=6.19.0",
+    "python-dotenv>=1.2.4",
+]
