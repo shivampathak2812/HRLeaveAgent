@@ -1,0 +1,61 @@
+{
+  "caches": {
+    "0be1a832c8f7970a": {
+      "entries": [
+        {
+          "questions": [
+            "How many leaves do I get per year?",
+            "What is the annual leave quota?",
+            "How many paid leave days are allowed in a year?",
+            "Does leave carry forward to next year?"
+          ],
+          "answer": "Every full-time, confirmed employee gets **18 paid leave days per calendar year**. It's one combined pool for casual and sick leave, and unused leave **does not carry forward** to the next year."
+        },
+        {
+          "questions": [
+            "What is the probation period rule?",
+            "Can I take leave during probation?",
+            "Can new employees apply for leave?",
+            "What is the probation period?"
+          ],
+          "answer": "Employees who joined **less than 6 months ago** are on probation and **can't apply for paid leave**. For an urgent absence during probation, please contact HR directly."
+        },
+        {
+          "questions": [
+            "How much advance notice is needed for leave?",
+            "How early should I apply for leave?",
+            "Can I apply for leave on the same day?",
+            "What is the notice period for leave?"
+          ],
+          "answer": "Leave must be applied **at least 1 day before** the leave date. The only exception is a **medical emergency**, which can be applied for on the same day."
+        },
+        {
+          "questions": [
+            "What is the maximum number of consecutive leave days?",
+            "How many days leave can I take at once?",
+            "Can I take more than 5 days leave?",
+            "What is the maximum leave I can apply for?"
+          ],
+          "answer": "You can apply for **up to 5 consecutive days** through this system. Anything longer needs **direct approval from your manager**, outside this system."
+        },
+        {
+          "questions": [
+            "What happens if I don't have enough leave balance?",
+            "Can I get partial leave approved?",
+            "What if I have zero leave balance?",
+            "What happens when my leave balance is 0?"
+          ],
+          "answer": "If your remaining balance is lower than the days you ask for, the request is **rejected**, and partial leave can't be auto-approved. With **0 days left**, you can't apply for any more paid leave this calendar year."
+        },
+        {
+          "questions": [
+            "What can you do?",
+            "How do I apply for leave?",
+            "How does this assistant work?"
+          ],
+          "answer": "I can check your leave balance and apply leave for you. Just tell me your **employee ID**, the **date**, and the **number of days**, for example: *I'm employee E101, I want 2 days leave on 2026-10-20.* I'll check it against the rule book and update the records if it's approved."
+        }
+      ]
+    }
+  }
+}

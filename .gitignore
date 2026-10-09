@@ -5,8 +5,12 @@ build/
 dist/
 wheels/
 *.egg-info
-
+ 
 # Virtual environments
 .venv
-
+ 
 .env
+ 
+# Uploaded rule books / employee databases (private data)
+uploads/
+ 
